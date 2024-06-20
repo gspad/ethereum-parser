@@ -16,8 +16,9 @@ func main() {
 	httpClient := &parser.RealHTTPClient{}
 
 	p := parser.NewParser(httpClient, memoryStorage)
-
 	apiHandler := api.NewAPI(p)
+
+	go p.Start("https://cloudflare-eth.com")
 
 	http.HandleFunc("/subscribe", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {

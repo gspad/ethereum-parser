@@ -1,29 +1,43 @@
 package parser
 
-import "github.com/gspad/ethereum-parser/shared"
+import (
+	"fmt"
+
+	"github.com/gspad/ethereum-parser/shared"
+	"github.com/gspad/ethereum-parser/storage"
+)
 
 type FakeParser struct {
-	CurrentBlock int
-	Subscribed   map[string]bool
-	Transactions map[string][]shared.Transaction
+	Storage storage.Storage
+}
+
+func (f *FakeParser) Start(url string) {
+	fmt.Printf("Starting fake parser\n")
 }
 
 func NewFakeParser() *FakeParser {
 	return &FakeParser{
-		Subscribed:   make(map[string]bool),
-		Transactions: make(map[string][]shared.Transaction),
+		Storage: storage.NewMemoryStorage(),
 	}
 }
 
+func (f *FakeParser) Parse(url string) {
+	f.Storage.SetCurrentBlock(0)
+}
+
 func (f *FakeParser) GetCurrentBlock() int {
-	return f.CurrentBlock
+	return f.Storage.GetCurrentBlock()
 }
 
 func (f *FakeParser) Subscribe(address string) bool {
-	f.Subscribed[address] = true
+	f.Storage.Subscribe(address)
 	return true
 }
 
 func (f *FakeParser) GetTransactions(address string) []shared.Transaction {
-	return f.Transactions[address]
+	return f.Storage.GetTransactions(address)
+}
+
+func (f *FakeParser) AddTransaction(address string, transaction shared.Transaction) {
+	f.Storage.AddTransaction(address, transaction)
 }

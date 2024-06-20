@@ -30,6 +30,8 @@ type NotificationService interface {
 }
 
 type Parser interface {
+	Start(url string)
+	Parse(url string)
 	GetCurrentBlock() int
 	Subscribe(address string) bool
 	GetTransactions(address string) []shared.Transaction
@@ -42,57 +44,63 @@ type ParserImpl struct {
 }
 
 func NewParser(httpClient HTTPClient, storage storage.Storage) *ParserImpl {
-	p := &ParserImpl{
+	parser := &ParserImpl{
 		storage:    storage,
 		httpClient: httpClient,
 	}
-	go p.updateCurrentBlock("https://cloudflare-eth.com")
-	return p
+	return parser
 }
 
-func (p *ParserImpl) updateCurrentBlock(url string) {
+func (p *ParserImpl) Start(url string) {
 	for {
-		resp, err := p.httpClient.Post(url, "application/json", bytes.NewBuffer([]byte(`{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}`)))
-		if err != nil {
-			log.Println("Error fetching block number:", err)
-			time.Sleep(time.Second)
-			continue
-		}
+		p.Parse(url)
+		time.Sleep(5 * time.Second)
+	}
+}
 
-		var result map[string]interface{}
-		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-			log.Println("Error decoding JSON:", err)
-			resp.Body.Close()
-			time.Sleep(time.Second)
-			continue
-		}
-		resp.Body.Close()
+func (p *ParserImpl) Parse(url string) {
+	payload := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"method":  "eth_blockNumber",
+		"params":  []interface{}{},
+		"id":      1,
+	}
 
-		blockHex, ok := result["result"].(string)
-		if !ok {
-			log.Println("Error: result is not a string")
-			time.Sleep(time.Second)
-			continue
-		}
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		log.Println("Error marshaling JSON payload:", err)
+		return
+	}
 
-		blockNum, err := strconv.ParseInt(blockHex[2:], 16, 64)
-		if err != nil {
-			log.Println("Error parsing block number:", err)
-			time.Sleep(time.Second)
-			continue
-		}
+	resp, err := p.httpClient.Post(url, "application/json", bytes.NewBuffer(payloadBytes))
+	if err != nil {
+		log.Println("Error fetching block number:", err)
+		return
+	}
+	defer resp.Body.Close()
 
-		p.mu.Lock()
-		if int(blockNum) > p.storage.GetCurrentBlock() {
-			log.Println("New block:", blockNum)
-			p.storage.SetCurrentBlock(int(blockNum))
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		log.Println("Error decoding JSON:", err)
+		return
+	}
 
-			//check for transactions involving subscribed addresses in the new block
-			p.checkTransactionsInBlock(url, blockHex)
-		}
-		p.mu.Unlock()
+	blockHex, ok := result["result"].(string)
+	if !ok {
+		log.Println("Error: result is not a string")
+		return
+	}
 
-		time.Sleep(10 * time.Second)
+	blockNum, err := strconv.ParseInt(blockHex[2:], 16, 64)
+	if err != nil {
+		log.Println("Error parsing block number:", err)
+		return
+	}
+
+	if int(blockNum) > p.storage.GetCurrentBlock() {
+		log.Println("New block:", blockNum)
+		p.storage.SetCurrentBlock(int(blockNum))
+		p.storeMatchingTransactions(url, blockHex)
 	}
 }
 
@@ -103,64 +111,22 @@ func (p *ParserImpl) GetCurrentBlock() int {
 }
 
 func (p *ParserImpl) Subscribe(address string) bool {
-	log.Println("Subscribing to", address)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.storage.Subscribe(address)
 	log.Println("Subscribed to", address)
+
+	subscribedAddr := p.storage.GetSubscribedAddresses()[address]
+	fmt.Println("Subscribed addresses to: ", subscribedAddr)
 	return true
 }
 
 func (p *ParserImpl) GetTransactions(address string) []shared.Transaction {
-	p.mu.Lock()
-	currentBlock := p.storage.GetCurrentBlock()
-	p.mu.Unlock()
-
-	url := "https://cloudflare-eth.com"
-	transactions := []shared.Transaction{}
-
-	blockHex := fmt.Sprintf("0x%x", currentBlock)
-	blockDetails, err := p.fetchBlockDetails(url, blockHex)
-	if err != nil {
-		log.Println("Error fetching block details:", err)
-		return transactions
-	}
-
-	txs, ok := blockDetails["transactions"].([]interface{})
-	if !ok {
-		log.Println("Error: transactions field is not a slice")
-		return transactions
-	}
-
-	for _, tx := range txs {
-		txMap, ok := tx.(map[string]interface{})
-		if !ok {
-			log.Println("Error: transaction is not a map")
-			continue
-		}
-
-		from, fromOk := txMap["from"].(string)
-		to, toOk := txMap["to"].(string)
-
-		if !fromOk || !toOk {
-			log.Println("Error: from or to field is not a string")
-			continue
-		}
-
-		if address == from || address == to {
-			transaction := shared.Transaction{
-				From:  from,
-				To:    to,
-				Value: txMap["value"].(string),
-			}
-			transactions = append(transactions, transaction)
-		}
-	}
-
-	return transactions
+	fmt.Println("Getting transactions for", address)
+	return p.storage.GetTransactions(address)
 }
 
-func (p *ParserImpl) checkTransactionsInBlock(url, blockHex string) {
+func (p *ParserImpl) storeMatchingTransactions(url, blockHex string) {
 	blockDetails, err := p.fetchBlockDetails(url, blockHex)
 	if err != nil {
 		log.Println("Error fetching block details:", err)
@@ -169,14 +135,14 @@ func (p *ParserImpl) checkTransactionsInBlock(url, blockHex string) {
 
 	txs, ok := blockDetails["transactions"].([]interface{})
 	if !ok {
-		log.Println("Error: transactions field is not a slice")
+		log.Printf("Error: transactions field is not a slice of interface{}. Got: %T", blockDetails["transactions"])
 		return
 	}
 
 	for _, tx := range txs {
 		txMap, ok := tx.(map[string]interface{})
 		if !ok {
-			log.Println("Error: transaction is not a map")
+			log.Printf("Error: transaction map is not a map[string]interface{}. Got %T", tx)
 			continue
 		}
 
@@ -184,7 +150,7 @@ func (p *ParserImpl) checkTransactionsInBlock(url, blockHex string) {
 		to, toOk := txMap["to"].(string)
 
 		if !fromOk || !toOk {
-			log.Println("Error: from or to field is not a string")
+			log.Println("Error: from or to field is not a string. Got from:", from, "to:", to)
 			continue
 		}
 
@@ -195,8 +161,9 @@ func (p *ParserImpl) checkTransactionsInBlock(url, blockHex string) {
 					To:    to,
 					Value: txMap["value"].(string),
 				}
-				//notify about the transaction (notification service not implemented)
-				log.Println("Transaction involving subscribed address:", transaction)
+
+				log.Println("Storing transaction")
+				p.StoreTransaction(address, transaction)
 			}
 		}
 	}
@@ -226,4 +193,10 @@ func (p *ParserImpl) fetchBlockDetails(url, blockHex string) (map[string]interfa
 	}
 
 	return result["result"].(map[string]interface{}), nil
+}
+
+func (p *ParserImpl) StoreTransaction(address string, transaction shared.Transaction) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.storage.AddTransaction(address, transaction)
 }

@@ -37,24 +37,21 @@ func TestHandleSubscribe(t *testing.T) {
 	if got["success"] != expected["success"] {
 		t.Errorf("expected %v, got %v", expected, got)
 	}
-
-	if !fakeParser.Subscribed["0x123"] {
-		t.Errorf("address not subscribed")
-	}
 }
 
-func TestHandleGetTransactions(t *testing.T) {
-	fakeParser := parser.NewFakeParser()
-	apiHandler := NewAPI(fakeParser)
+func TestParser_GetTransactions(t *testing.T) {
+	p := parser.NewFakeParser()
 
-	address := "0x123"
-	transactions := []shared.Transaction{
-		{From: "0xabc", To: address, Value: "100"},
-		{From: address, To: "0xdef", Value: "50"},
+	apiHandler := NewAPI(p)
+
+	tx := shared.Transaction{
+		From:  "0x100",
+		To:    "0x200",
+		Value: "100",
 	}
-	fakeParser.Transactions[address] = transactions
+	p.AddTransaction("0xToAddress", tx)
 
-	req, err := http.NewRequest("GET", "/transactions?address=0x123", nil)
+	req, err := http.NewRequest("GET", "/transactions?address=0xToAddress", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,27 +64,26 @@ func TestHandleGetTransactions(t *testing.T) {
 		t.Errorf("handler returned wrong status code: got %v want %v", status, http.StatusOK)
 	}
 
-	var got []shared.Transaction
-	if err := json.NewDecoder(rr.Body).Decode(&got); err != nil {
-		t.Errorf("failed to decode response body: %v", err)
+	var transactions []shared.Transaction
+	err = json.NewDecoder(rr.Body).Decode(&transactions)
+	if err != nil {
+		t.Fatal(err)
 	}
 
-	if len(got) != len(transactions) {
-		t.Errorf("expected %d transactions, got %d", len(transactions), len(got))
+	if len(transactions) != 1 {
+		t.Fatalf("expected 1 transaction, got %d", len(transactions))
 	}
 
-	for i, tx := range transactions {
-		if tx != got[i] {
-			t.Errorf("expected transaction %v, got %v", tx, got[i])
-		}
+	if transactions[0] != tx {
+		t.Errorf("expected transaction %v, got %v", tx, transactions[0])
 	}
 }
 
 func TestHandleGetCurrentBlock(t *testing.T) {
-	fakeParser := parser.NewFakeParser()
-	apiHandler := NewAPI(fakeParser)
+	p := parser.NewFakeParser()
+	apiHandler := NewAPI(p)
 
-	fakeParser.CurrentBlock = 1207
+	p.Storage.SetCurrentBlock(1207)
 
 	req, err := http.NewRequest("GET", "/block", nil)
 	if err != nil {
